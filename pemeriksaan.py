@@ -39,12 +39,17 @@ MAKS_TOKEN_EKSTRAK = 6000
 MAKS_TOKEN_URAIAN = 1200
 SISI_GAMBAR_OCR = 3000       # px sisi terpanjang foto yang dikirim ke OCR
 SISI_GAMBAR_VISI = 1400      # px; DeepSeek mengecilkan gambar ke sekitar 1300x1300
-MAKS_GAMBAR = {"label": 3, "barang": 4, "dokumen": 2}      # foto per slot; foto dokumen dihitung per lembar
+MAKS_GAMBAR = {"label": 4, "barang": 6, "dokumen": 6}      # foto per menu yang dikirim ke AI (sisanya tetap di-OCR dan disimpan)
+FOTO_DOKUMEN_RINCI = 2       # foto dokumen pertama dikirim utuh + potongan atas/tengah/bawah; selebihnya hanya utuh
 STRIP_DOKUMEN = 3            # foto dokumen dipotong menjadi sekian bagian (atas/tengah/bawah) agar OCR tidak terpotong
 TUMPUK_STRIP = 0.15          # bagian yang saling bertumpuk antar potongan
 NAMA_BAGIAN = {3: ["atas", "tengah", "bawah"], 2: ["atas", "bawah"]}
 
-SLOT_JUDUL = {"dokumen": "Dokumen", "label": "Foto label barang", "barang": "Foto barang"}
+SLOT_JUDUL = {"dokumen": "Dokumen", "label": "Foto label barang", "barang": "Foto barang", "lainnya": "Foto/File lainnya"}
+SLOT_PROSES = ("dokumen", "label", "barang")      # menu yang dibaca OCR dan AI; "lainnya" hanya disimpan dan ditampilkan
+
+MASA_SIMPAN_HARI = 7         # foto dokumentasi dan baris sheet disimpan di database selama ini
+SLOT_RINGKAS = {"dokumen": "Dokumen", "label": "Label", "barang": "Barang", "lainnya": "Lainnya"}
 
 # Waktu bawaan sesuai template pemeriksa (boleh diubah di Pengaturan)
 JAM_BAWAAN = {"bm_mulai": jam(9, 0), "bm_selesai": jam(10, 0), "per_mulai": jam(10, 1), "per_selesai": jam(11, 1)}
@@ -83,6 +88,7 @@ KOLOM = [
     ("bm_selesai", "", "waktu", 10, 74),
     ("per_mulai", "Waktu Pemeriksaan", "waktu", 10, 74),
     ("per_selesai", "", "waktu", 10, 74),
+    ("dokumentasi", "file dokumentasi", "berkas", 36, 340),
 ]
 KUNCI_CEK = [k[0] for k in KOLOM if k[2] == "cek"]
 KUNCI_WAKTU = [k[0] for k in KOLOM if k[2] == "waktu"]
@@ -96,7 +102,7 @@ class GalatPemeriksaan(Exception):
 
 @dataclass
 class Berkas:
-    slot: str                 # "dokumen" | "label" | "barang"
+    slot: str                 # "dokumen" | "label" | "barang" | "lainnya" (yang terakhir tidak diproses OCR/AI)
     nama: str
     data: bytes
     sumber: str = "unggah"    # "unggah" | "kamera"
@@ -387,8 +393,10 @@ def siapkan_gambar_visi(berkas: list[Berkas], ocr: list[dict]) -> list[dict]:
     for slot in ("label", "barang"):
         for b in [x for x in berkas if x.slot == slot and not x.pdf][:MAKS_GAMBAR[slot]]:
             tambah(slot, b.nama, b.data)
-    for b in dok_foto:
+    for i, b in enumerate(dok_foto):
         tambah("dokumen", b.nama, b.data, "utuh")
+        if i >= FOTO_DOKUMEN_RINCI:
+            continue
         try:
             potongan = potong_strip(b.data, maks_sisi=SISI_GAMBAR_VISI)
         except Exception:        # noqa: BLE001
@@ -879,9 +887,10 @@ def jalankan(agen, berkas: list[Berkas], p: Pengaturan, progres=lambda t: None) 
     """OCR semua berkas, lalu analisis. Melempar GalatPemeriksaan bila tidak ada yang bisa diproses."""
     if not any(b.slot == "dokumen" for b in berkas):
         raise GalatPemeriksaan("Tambahkan minimal satu dokumen (BC 2.5 atau packing list) terlebih dahulu.")
-    progres(f"Membaca {len(berkas)} berkas dengan OCR...")
-    ocr = ocr_semua(agen.klien.api_key, berkas, progres)
-    gambar = siapkan_gambar_visi(berkas, ocr)
+    diproses = [b for b in berkas if b.slot in SLOT_PROSES]          # "Foto/File lainnya" tidak masuk OCR maupun AI
+    progres(f"Membaca {len(diproses)} berkas dengan OCR...")
+    ocr = ocr_semua(agen.klien.api_key, diproses, progres)
+    gambar = siapkan_gambar_visi(diproses, ocr)
     return analisis(agen, ocr, gambar, p, progres)
 
 
@@ -890,6 +899,7 @@ def gabung_ulang(lama: dict, baru: dict) -> dict:
     for k in KUNCI_CEK + KUNCI_WAKTU:
         baru[k] = lama.get(k)
     baru["id"] = lama.get("id")
+    baru["berkas"] = lama.get("berkas", [])
     baru["rev"] = lama.get("rev", 0) + 1
     return baru
 
@@ -919,7 +929,25 @@ def terapkan_aksi_sheet(baris: list[dict], aksi) -> bool:
     return False
 
 
+def aksi_berkas(baris: list[dict], aksi) -> tuple[str, dict] | None:
+    """Validasi klik Lihat/Unduh dari sheet: hanya file yang memang tercatat pada baris sheet yang boleh diambil.
+    Mengembalikan (mode, meta) atau None."""
+    if not isinstance(aksi, dict) or aksi.get("aksi") != "berkas" or aksi.get("mode") not in ("lihat", "unduh"):
+        return None
+    try:
+        fid = int(aksi.get("fid"))
+    except (TypeError, ValueError):
+        return None
+    for b in baris:
+        for f in b.get("berkas") or []:
+            if f.get("id") == fid:
+                return aksi["mode"], f
+    return None
+
+
 def nilai_tampil(b: dict, kunci: str) -> str:
+    if kunci == "dokumentasi":
+        return "; ".join(f"{SLOT_RINGKAS.get(f.get('slot'), '')}: {f.get('nama', '')}".strip(": ") for f in b.get("berkas") or [])
     v = b.get(kunci)
     if kunci == "no_dok":
         return f"{v:06d}" if isinstance(v, int) else ""
@@ -977,6 +1005,9 @@ def buat_xlsx(baris: list[dict]) -> bytes:
                     c.value = v or None
             elif jenis == "cek":
                 c.value = norm_cek(v) or None
+            elif jenis == "berkas":
+                c.value = nilai_tampil(b, kunci) or None
+                c.alignment = Alignment(vertical="top", wrap_text=True)
             elif jenis == "waktu":
                 c.value, c.number_format = (v if isinstance(v, jam) else None), "h:mm:ss"
             elif kunci == "barang_periksa":
@@ -989,7 +1020,7 @@ def buat_xlsx(baris: list[dict]) -> bytes:
             else:
                 c.value = v or None
         ws.row_dimensions[r].height = 60
-    ws.auto_filter.ref = f"A1:T{max(2, len(baris) + 1)}"
+    ws.auto_filter.ref = f"A1:{_huruf(len(KOLOM) - 1)}{max(2, len(baris) + 1)}"
     ws2 = wb.create_sheet("Catatan")
     ws2.append(["No Dokumen", "Catatan / peringatan", "Berkas sumber"])
     for b in baris:
@@ -1022,7 +1053,37 @@ def _atr(teks: str) -> str:
     return H.escape(teks, quote=True).replace("\n", "&#10;")
 
 
+def _pendek(nama: str, maks: int = 26) -> str:
+    if len(nama) <= maks:
+        return nama
+    ujung = nama[-8:]
+    return nama[:maks - len(ujung) - 1] + "\u2026" + ujung
+
+
+def _html_berkas(b: dict) -> str:
+    daftar = b.get("berkas") or []
+    if not daftar:
+        return '<span class="xs-bk-kosong">tidak ada file</span>'
+    item = []
+    for f in daftar:
+        ikon = (f'<img class="xs-mini" src="data:image/jpeg;base64,{f["mini"]}" alt="" title="Lihat">' if f.get("mini")
+                else '<span class="xs-pdf" title="Lihat">PDF</span>' if f.get("mime") == "application/pdf"
+                else f'<span class="xs-pdf" title="Lihat">{H.escape((Path(f.get("nama", "")).suffix[1:].upper()[:4]) or "FILE")}</span>')
+        nama = H.escape(f.get("nama", ""), quote=True)
+        label = SLOT_RINGKAS.get(f.get("slot"), "")
+        item.append(
+            f'<div class="xs-bk" data-fid="{f["id"]}" data-nama="{nama}">{ikon}'
+            f'<span class="xs-bk-nama" title="{nama}"><b>{H.escape(label)}</b>{H.escape(_pendek(f.get("nama", "")))}</span>'
+            '<span class="xs-bk-aksi"><button type="button" class="xs-bk-lihat">Lihat</button>'
+            '<button type="button" class="xs-bk-unduh">Unduh</button></span></div>')
+    awal = min((f.get("dibuat") or time.time()) for f in daftar)
+    sisa = max(0, math.ceil((awal + MASA_SIMPAN_HARI * 86400 - time.time()) / 86400))
+    return f'<div class="xs-bk-daftar">{"".join(item)}</div><div class="xs-bk-sisa">tersimpan {len(daftar)} file, sisa {sisa} hari</div>'
+
+
 def _sel(b: dict, kunci: str, jenis: str, kosong: set[str]) -> str:
+    if jenis == "berkas":
+        return f'<td class="xs-berkas" data-id="{b.get("id", "")}" data-k="{kunci}">{_html_berkas(b)}</td>'
     teks = nilai_tampil(b, kunci)
     kelas = ["xs-" + jenis]
     if kunci in kosong:
@@ -1115,6 +1176,19 @@ table.xs td.terbuka .xs-tombol::after{content:"\\25B4  ringkas";}
 .xs-bawah{display:flex;gap:16px;align-items:center;flex-wrap:wrap;padding:7px 12px;background:#F4F6FA;border-top:1px solid #DDE2EB;font:12px Arial,sans-serif;color:#5B6577;}
 .xs-tab{background:#fff;border:1px solid #BFC6D4;border-bottom:3px solid #0E7A43;border-radius:6px 6px 0 0;padding:3px 14px;font-weight:700;color:#0E5A33;}
 .xs-legenda i{display:inline-block;width:11px;height:11px;background:#FFF1C9;border:1px solid #E2C46E;vertical-align:-1px;margin-right:4px;}
+table.xs td.xs-berkas{cursor:default;padding:5px 6px;}
+table.xs .xs-bk-daftar{max-height:200px;overflow:auto;}
+table.xs .xs-bk{display:flex;align-items:center;gap:7px;padding:3px 0;border-bottom:1px solid #EEF1F6;}
+table.xs .xs-bk:last-child{border-bottom:none;}
+table.xs .xs-mini{width:34px;height:34px;object-fit:cover;border-radius:6px;border:1px solid #DDE2EB;cursor:zoom-in;flex:0 0 auto;}
+table.xs .xs-pdf{width:34px;height:34px;border-radius:6px;background:#FDE8E4;color:#B3321F;font-weight:800;font-size:10px;display:flex;align-items:center;justify-content:center;cursor:zoom-in;flex:0 0 auto;}
+table.xs .xs-bk-nama{flex:1 1 auto;min-width:0;font-size:11.5px;line-height:1.3;overflow:hidden;white-space:nowrap;text-overflow:ellipsis;}
+table.xs .xs-bk-nama b{display:block;font-size:10px;font-weight:700;color:#C9622A;letter-spacing:.04em;text-transform:uppercase;}
+table.xs .xs-bk-aksi{display:flex;gap:4px;flex:0 0 auto;}
+table.xs .xs-bk button{font:600 11px Arial,sans-serif;padding:3px 8px;border-radius:999px;border:1px solid #BFC6D4;background:#fff;color:#1B2440;cursor:pointer;}
+table.xs .xs-bk button:hover{background:#F58220;border-color:#F58220;color:#1B1204;}
+table.xs .xs-bk-sisa{margin-top:3px;font-size:10.5px;color:#7C86A3;}
+table.xs .xs-bk-kosong{color:#9AA3B8;font-size:11.5px;}
 div[role="dialog"]:has(.xs-penuh){width:90vw!important;max-width:90vw!important;}
 .xs-penuh{height:0;}
 
@@ -1125,8 +1199,8 @@ div[role="dialog"]:has(.xs-penuh){width:90vw!important;max-width:90vw!important;
 .pb-slot-sub{font-size:.76rem;color:#5C6785;line-height:1.35;}
 .pb-hitung{margin-left:auto;font-size:.72rem;font-weight:800;padding:3px 10px;border-radius:999px;color:#9A4B00;background:rgba(245,130,32,.16);border:1px solid rgba(245,130,32,.45);white-space:nowrap;}
 .pb-hitung.ada{color:#0E7A43;background:rgba(14,122,67,.12);border-color:rgba(14,122,67,.35);}
-.st-key-slot_dokumen,.st-key-slot_label,.st-key-slot_barang{border-radius:22px;border:1px solid rgba(10,31,68,.09);background:rgba(255,255,255,.88);padding:.9rem 1rem .7rem 1rem;margin-bottom:.8rem;box-shadow:0 14px 32px -24px rgba(10,31,68,.55);}
-.st-key-slot_dokumen [data-testid="stFileUploaderDropzone"],.st-key-slot_label [data-testid="stFileUploaderDropzone"],.st-key-slot_barang [data-testid="stFileUploaderDropzone"]{border-radius:16px;border:1.5px dashed rgba(245,130,32,.6);background:#FFF8EC;}
+.st-key-slot_dokumen,.st-key-slot_label,.st-key-slot_barang,.st-key-slot_lainnya{border-radius:22px;border:1px solid rgba(10,31,68,.09);background:rgba(255,255,255,.88);padding:.9rem 1rem .7rem 1rem;margin-bottom:.8rem;box-shadow:0 14px 32px -24px rgba(10,31,68,.55);}
+.st-key-slot_dokumen [data-testid="stFileUploaderDropzone"],.st-key-slot_label [data-testid="stFileUploaderDropzone"],.st-key-slot_barang [data-testid="stFileUploaderDropzone"],.st-key-slot_lainnya [data-testid="stFileUploaderDropzone"]{border-radius:16px;border:1.5px dashed rgba(245,130,32,.6);background:#FFF8EC;}
 .st-key-slot_dokumen [data-testid="stCameraInput"] video,.st-key-slot_label [data-testid="stCameraInput"] video,.st-key-slot_barang [data-testid="stCameraInput"] video,
 .st-key-slot_dokumen [data-testid="stCameraInput"] img,.st-key-slot_label [data-testid="stCameraInput"] img,.st-key-slot_barang [data-testid="stCameraInput"] img{border-radius:16px;}
 .pb-sheet-judul{font-family:'Playfair Display',Georgia,serif;font-size:1.2rem;font-weight:700;color:var(--navy);margin:0;}
@@ -1147,6 +1221,16 @@ html,body{margin:0;padding:0;background:transparent;overflow:hidden;font-family:
   font-size:12.5px;opacity:0;pointer-events:none;transition:opacity .18s;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;z-index:50;}
 #toast.tampil{opacity:.96;}
 td.xs-baru{outline:2px solid #F58220;outline-offset:-2px;}
+#lb{position:fixed;inset:0;z-index:100;background:rgba(10,20,40,.88);display:flex;flex-direction:column;}
+#lb .lb-bar{flex:0 0 auto;display:flex;gap:10px;align-items:center;padding:8px 12px;background:#0A1F44;color:#fff;font-size:13px;}
+#lb .lb-nama{flex:1 1 auto;min-width:0;overflow:hidden;white-space:nowrap;text-overflow:ellipsis;font-weight:700;}
+#lb .lb-nama small{font-weight:400;opacity:.75;margin-left:8px;}
+#lb button{font:700 12px Arial,sans-serif;padding:6px 14px;border-radius:999px;border:0;cursor:pointer;background:#fff;color:#0A1F44;}
+#lb button.utama{background:linear-gradient(90deg,#F58220,#F7B733);color:#1B1204;}
+#lb .lb-isi{flex:1 1 auto;min-height:0;display:flex;align-items:center;justify-content:center;overflow:auto;padding:10px;}
+#lb img{max-width:100%;max-height:100%;object-fit:contain;cursor:zoom-in;border-radius:6px;}
+#lb img.lb-zoom{max-width:none;max-height:none;cursor:zoom-out;}
+#lb .lb-pesan{color:#fff;text-align:center;font-size:14px;line-height:1.7;max-width:420px;}
 __CSS__
 </style></head><body>
 <div id="akar"></div><div id="toast"></div>
@@ -1193,6 +1277,65 @@ __CSS__
   function kedip(td) { td.classList.add("xs-baru"); setTimeout(function () { td.classList.remove("xs-baru"); }, 700); }
   function kunciSel(td) { return td.getAttribute("data-id") + "|" + td.getAttribute("data-k"); }
 
+  // ---- file dokumentasi: Lihat (pratinjau di dalam sheet) dan Unduh (langsung)
+  var sudahToken = 0, urlAktif = null;
+  function kirimBerkas(mode, fid, nama) {
+    hitung += 1;
+    kirim("streamlit:setComponentValue", {dataType: "json", value: {
+      aksi: "berkas", mode: mode, fid: fid, seq: Date.now() * 1000 + (hitung % 1000)}});
+    info(mode === "lihat" ? "Membuka" : "Menyiapkan unduhan", nama);
+  }
+  function dariB64(b64, mime) {
+    var bin = atob(b64), n = bin.length, u8 = new Uint8Array(n);
+    for (var i = 0; i < n; i++) u8[i] = bin.charCodeAt(i);
+    return new Blob([u8], {type: mime || "application/octet-stream"});
+  }
+  function unduhUrl(url, nama) {
+    var a = document.createElement("a");
+    a.href = url; a.download = nama || "dokumentasi";
+    document.body.appendChild(a); a.click(); document.body.removeChild(a);
+  }
+  function ukuranTeks(n) { return n > 1048576 ? (n / 1048576).toFixed(1) + " MB" : Math.max(1, Math.round(n / 1024)) + " KB"; }
+  function tutupLb() {
+    var lb = document.getElementById("lb"); if (lb) lb.remove();
+    if (urlAktif) { var u = urlAktif; urlAktif = null; setTimeout(function () { URL.revokeObjectURL(u); }, 1000); }
+  }
+  function bukaLb(m, url) {
+    tutupLb(); urlAktif = url;
+    var gambar = (m.mime || "").indexOf("image/") === 0;
+    var lb = document.createElement("div"); lb.id = "lb";
+    var bar = document.createElement("div"); bar.className = "lb-bar";
+    var nama = document.createElement("div"); nama.className = "lb-nama"; nama.textContent = m.nama;
+    var kecil = document.createElement("small"); kecil.textContent = ukuranTeks(m.ukuran || 0); nama.appendChild(kecil);
+    function tombol(teks, kelas, fn) { var b = document.createElement("button"); b.textContent = teks; if (kelas) b.className = kelas; b.onclick = fn; return b; }
+    bar.appendChild(nama);
+    bar.appendChild(tombol("Unduh", "utama", function () { unduhUrl(url, m.nama); info("Mengunduh", m.nama); }));
+    bar.appendChild(tombol("Buka di tab baru", "", function () { window.open(url, "_blank"); }));
+    bar.appendChild(tombol("Tutup", "", tutupLb));
+    var isi = document.createElement("div"); isi.className = "lb-isi";
+    if (gambar) {
+      var img = document.createElement("img"); img.src = url; img.alt = m.nama;
+      img.onclick = function () { img.classList.toggle("lb-zoom"); };
+      isi.appendChild(img);
+    } else {
+      var p = document.createElement("div"); p.className = "lb-pesan";
+      p.textContent = "Pratinjau berkas ini tidak tersedia di dalam sheet. Gunakan Buka di tab baru atau Unduh.";
+      isi.appendChild(p);
+    }
+    lb.appendChild(bar); lb.appendChild(isi); document.body.appendChild(lb);
+  }
+  function tangani(m) {
+    if (m.mode === "galat") { info(m.pesan || "File tidak tersedia", ""); return; }
+    var url = URL.createObjectURL(dariB64(m.b64, m.mime));
+    if (m.mode === "unduh") {
+      unduhUrl(url, m.nama); info("Mengunduh", m.nama);
+      setTimeout(function () { URL.revokeObjectURL(url); }, 60000);
+      return;
+    }
+    bukaLb(m, url);
+  }
+  document.addEventListener("keydown", function (e) { if (e.key === "Escape") tutupLb(); });
+
   function siklus(td) {                              // kosong -> V -> X -> kosong
     var sekarang = td.getAttribute("data-nilai") || "";
     var baru = sekarang === "" ? "V" : (sekarang === "V" ? "X" : "");
@@ -1210,8 +1353,15 @@ __CSS__
   akar.addEventListener("click", function (ev) {
     var t = ev.target;
     if (!t || !t.closest) return;
+    var bk = t.closest(".xs-bk");
+    if (bk) {                                        // tombol Lihat / Unduh pada sel file dokumentasi
+      var fid = parseInt(bk.getAttribute("data-fid"), 10), nm = bk.getAttribute("data-nama") || "";
+      if (t.closest(".xs-bk-unduh")) kirimBerkas("unduh", fid, nm);
+      else if (t.closest(".xs-bk-lihat") || t.closest(".xs-mini") || t.closest(".xs-pdf")) kirimBerkas("lihat", fid, nm);
+      return;
+    }
     var td = t.closest("td");
-    if (!td || td.classList.contains("xs-kosong")) return;
+    if (!td || td.classList.contains("xs-kosong") || td.classList.contains("xs-berkas")) return;
     if (t.closest(".xs-tombol")) { td.classList.toggle("terbuka"); return; }
     if (td.classList.contains("xs-cek")) { siklus(td); return; }
     var teks = td.getAttribute("data-salin");
@@ -1221,6 +1371,7 @@ __CSS__
   });
 
   function render(a) {
+    if (a.muat && a.muat.token && a.muat.token !== sudahToken) { sudahToken = a.muat.token; tangani(a.muat); }
     var h = hitungTinggi(a);
     kirim("streamlit:setFrameHeight", {height: h});
     var kunci = (a.html || "") + "|" + h;

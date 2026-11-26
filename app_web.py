@@ -30,6 +30,7 @@ Pengaturan suara (opsional, taruh di .env):
 import asyncio
 import base64
 import hashlib
+import hmac
 import html as H
 import inspect
 import io
@@ -76,13 +77,15 @@ if _HILANG:
 
 try:
     import dashboard as DB
+    import akun as AK
     import pemeriksaan as PM
+    import penyimpanan as PS
     import peta_wilayah as PW
 except ImportError as e:  # berkas pendukung belum disalin ke folder ini
     st.error("Berkas pendukung belum lengkap, jadi aplikasi web belum bisa berjalan.")
     st.markdown(
-        "Salin **tiga berkas** ini ke folder SEMAR (satu folder dengan `app_web.py`):\n"
-        "- `dashboard.py`\n- `peta_wilayah.py`\n- `pemeriksaan.py`\n\nLalu jalankan ulang SEMAR.")
+        "Salin **lima berkas** ini ke folder SEMAR (satu folder dengan `app_web.py`):\n"
+        "- `dashboard.py`\n- `peta_wilayah.py`\n- `pemeriksaan.py`\n- `penyimpanan.py`\n- `akun.py`\n\nLalu jalankan ulang SEMAR.")
     st.code(f"Penyebab: {e}", language="text")
     st.stop()
 
@@ -380,6 +383,10 @@ a.rujuk:hover{transform:translateY(-2px);box-shadow:0 8px 16px -8px rgba(27,79,1
 
 
 CSS_NAV = """
+.user-kartu{margin:.2rem 0 .6rem 0;padding:.65rem .8rem;border-radius:16px;background:rgba(255,255,255,.1);border:1px solid rgba(255,255,255,.16);}
+.user-kartu .uk-nama{font-weight:800;font-size:.95rem;line-height:1.25;color:#fff;}
+.user-kartu .uk-sub{font-size:.76rem;line-height:1.35;color:#CFD9F2;}
+.user-kartu .uk-admin{margin-left:8px;font-size:.62rem;font-weight:800;letter-spacing:.08em;text-transform:uppercase;padding:2px 8px;border-radius:999px;color:#1B1204;background:linear-gradient(90deg,#F58220,#F7B733);vertical-align:middle;}
 .st-key-nav_halaman{margin:.1rem 0 .5rem 0;}
 .st-key-nav_halaman .stButton>button{justify-content:flex-start;text-align:left;padding:.62rem .9rem;font-size:.95rem;}
 .st-key-nav_halaman .stButton>button[kind="secondary"]{background:rgba(255,255,255,.08);}
@@ -988,7 +995,10 @@ def siapkan_agen() -> S.Semar:
     except SystemExit as e:  # API key belum terbaca
         st.error("API key DeepSeek belum terbaca, jadi SEMAR belum bisa dipakai.")
         st.code(str(e.code), language="text")
-        st.info("Perbaiki file .env, simpan, lalu muat ulang halaman ini (tekan F5).")
+        if _online():
+            st.info("Isi DEEPSEEK_API_KEY pada Secrets aplikasi (Settings, lalu Secrets), simpan, lalu muat ulang halaman ini.")
+        else:
+            st.info("Perbaiki file .env, simpan, lalu muat ulang halaman ini (tekan F5).")
         st.stop()
     agen.kb = kb_bersama()
     return agen
@@ -996,13 +1006,148 @@ def siapkan_agen() -> S.Semar:
 
 terapkan_tema()
 
+
+# ===========================================================================
+# LOGIN: akun per pengguna (NIP + kata sandi), disimpan di database
+# ===========================================================================
+def _rahasia(nama: str) -> str:
+    """Pengaturan rahasia: variabel lingkungan dulu, lalu st.secrets (Streamlit Cloud)."""
+    nilai = os.getenv(nama, "")
+    if not nilai:
+        try:
+            nilai = str(st.secrets.get(nama, ""))
+        except Exception:  # noqa: BLE001  (tidak ada berkas secrets)
+            nilai = ""
+    return nilai.strip()
+
+
+def _online() -> bool:
+    """True bila berjalan di server (Streamlit Cloud, atau SEMAR_ONLINE=1), bukan di komputer sendiri."""
+    return _rahasia("SEMAR_ONLINE").lower() in ("1", "true", "ya", "yes") or S.BASE_DIR.as_posix().startswith("/mount/src")
+
+
+@st.cache_resource(show_spinner=False)
+def _buat_db():
+    return PS.Penyimpanan(_rahasia("DATABASE_URL") or None)
+
+
+def _database():
+    """Database penyimpanan 7 hari, atau None bila belum tersambung (dicoba lagi tiap 60 detik agar halaman tidak melambat)."""
+    ss = st.session_state
+    if time.time() < ss.get("pb_db_tunda", 0):
+        return None
+    try:
+        return _buat_db()
+    except Exception as e:  # noqa: BLE001
+        ss["pb_db_galat"], ss["pb_db_tunda"] = f"{type(e).__name__}: {e}", time.time() + 60
+        return None
+
+
+def _akun():
+    db = _database()
+    return AK.Akun(db) if db is not None else None
+
+
+def _segarkan_akun() -> None:
+    """Tiap 60 detik pastikan akun yang sedang masuk masih aktif (akun yang dinonaktifkan atau dihapus admin langsung ditutup)."""
+    ss = st.session_state
+    if time.time() - ss.get("_cek_akun", 0) < 60:
+        return
+    akun, u = _akun(), ss.get("_user")
+    if akun is None or u is None:
+        return
+    try:
+        terbaru = akun.masih_berlaku(u["id"])
+    except Exception:  # noqa: BLE001  (database sesaat tidak terjangkau: biarkan sesi berjalan)
+        return
+    ss["_cek_akun"] = time.time()
+    if terbaru is None:
+        ss.clear()
+        ss["_info_login"] = "Akun Anda tidak aktif lagi. Hubungi admin."
+        st.rerun()
+    ss["_user"] = {**u, "peran": terbaru["peran"], "nama": terbaru["nama"]}      # peran terbaru (mis. dicabut admin)
+
+
+def gerbang_login() -> None:
+    """Halaman login/daftar sebelum halaman utama. Memakai akun di database (NIP + kata sandi).
+    SEMAR_TANPA_LOGIN=1 hanya berlaku di komputer sendiri (bukan di server)."""
+    ss = st.session_state
+    if _rahasia("SEMAR_TANPA_LOGIN").lower() in ("1", "true", "ya", "yes") and not _online():
+        return
+    if ss.get("_user"):
+        _segarkan_akun()
+        return
+    st.markdown(padatkan(f"""
+<div style="max-width:440px;margin:5vh auto 1rem auto;text-align:center">
+  <div style="width:96px;height:96px;margin:0 auto .6rem auto">{ikon_semar_html()}</div>
+  <div style="font-family:'Playfair Display',Georgia,serif;font-size:2rem;font-weight:800;color:var(--navy)">SEMAR</div>
+  <div style="color:#5C6785;font-size:.9rem">Masuk dengan NIP dan kata sandi, atau daftar bila belum punya akun.</div>
+</div>"""), unsafe_allow_html=True)
+    _, tengah, _ = st.columns([1, 1.6, 1])
+    with tengah:
+        if ss.get("_info_login"):
+            st.warning(ss.pop("_info_login"))
+        akun = _akun()
+        if akun is None:
+            st.error("Database akun belum tersambung, jadi login belum bisa dipakai. " + (ss.get("pb_db_galat") or ""))
+            if st.button("Coba sambungkan lagi", icon=":material/refresh:"):
+                ss["pb_db_tunda"] = 0
+                st.rerun()
+            st.stop()
+        if _online() and akun.db.jenis == "sqlite":
+            st.warning("Akun masih disimpan di file lokal server dan akan hilang saat aplikasi restart. "
+                       "Admin: isi DATABASE_URL (Postgres/Neon) pada Secrets.")
+        tab_masuk, tab_daftar = st.tabs(["Masuk", "Daftar"])
+        with tab_masuk:
+            with st.form("form_masuk"):
+                nip = st.text_input("NIP", placeholder="18 digit", max_chars=30)
+                sandi = st.text_input("Kata sandi", type="password")
+                kirim = st.form_submit_button("Masuk", type="primary", width="stretch")
+            if kirim:
+                try:
+                    pengguna, pesan = akun.masuk(nip, sandi)
+                except Exception as e:  # noqa: BLE001
+                    pengguna, pesan = None, f"Gagal membaca database akun: {type(e).__name__}."
+                if pengguna:
+                    ss["_user"], ss["_cek_akun"] = pengguna, time.time()
+                    st.rerun()
+                st.error(pesan)
+        with tab_daftar:
+            with st.form("form_daftar"):
+                nama = st.text_input("Nama", placeholder="Nama lengkap")
+                nip_d = st.text_input("NIP ", placeholder="18 digit (dipakai untuk masuk)", max_chars=30)
+                jabatan = st.text_input("Jabatan")
+                satker = st.text_input("Satker", placeholder="Satuan kerja, mis. KPPBC ...")
+                seksi = st.text_input("Seksi")
+                sandi_d = st.text_input("Kata sandi (minimal 8 karakter)", type="password")
+                ulang = st.text_input("Ulangi kata sandi", type="password")
+                kirim_d = st.form_submit_button("Daftar", type="primary", width="stretch")
+            st.caption("Akun baru aktif setelah disetujui admin.")
+            if kirim_d:
+                try:
+                    ok, pesan, _status = akun.daftar(nama, nip_d, jabatan, satker, seksi, sandi_d, ulang,
+                                                     admin_nip=_rahasia("SEMAR_ADMIN_NIP"), online=_online())
+                except Exception as e:  # noqa: BLE001
+                    ok, pesan = False, f"Gagal menyimpan akun: {type(e).__name__}."
+                (st.success if ok else st.error)(pesan)
+    st.stop()
+
+
+gerbang_login()
+
 # Halaman yang bisa dipilih di sidebar: (nama, ikon)
 HALAMAN = [
     ("Dashboard", ":material/space_dashboard:"),
     ("Semar", ":material/forum:"),
     ("Pemeriksaan Barang", ":material/inventory_2:"),
 ]
-NAMA_HALAMAN = [h[0] for h in HALAMAN]
+HALAMAN_ADMIN = [("Pengguna", ":material/group:")]
+
+
+def daftar_halaman() -> list[tuple[str, str]]:
+    """Halaman yang tampil di sidebar; 'Pengguna' hanya untuk admin."""
+    admin = (st.session_state.get("_user") or {}).get("peran") == "admin"
+    return HALAMAN + (HALAMAN_ADMIN if admin else [])
 
 
 def _pindah_halaman(nama: str) -> None:
@@ -1083,7 +1228,10 @@ def siapkan_agen() -> S.Semar:
     except SystemExit as e:  # API key belum terbaca
         st.error("API key DeepSeek belum terbaca, jadi SEMAR belum bisa dipakai.")
         st.code(str(e.code), language="text")
-        st.info("Perbaiki file .env, simpan, lalu muat ulang halaman ini (tekan F5).")
+        if _online():
+            st.info("Isi DEEPSEEK_API_KEY pada Secrets aplikasi (Settings, lalu Secrets), simpan, lalu muat ulang halaman ini.")
+        else:
+            st.info("Perbaiki file .env, simpan, lalu muat ulang halaman ini (tekan F5).")
         st.stop()
     agen.kb = kb_bersama()
     return agen
@@ -1100,7 +1248,7 @@ st.session_state.setdefault("chat_buka", False)    # kolom chat tertutup saat ap
 if "_mode_baru" in st.session_state:          # perpindahan mode diminta pada run sebelumnya
     st.session_state["mode"] = st.session_state.pop("_mode_baru")
 st.session_state.setdefault("mode", "Dashboard")
-if st.session_state["mode"] not in NAMA_HALAMAN:     # mis. nama lama "Percakapan"
+if st.session_state["mode"] not in [h[0] for h in daftar_halaman()]:     # mis. nama lama "Percakapan", atau halaman admin
     st.session_state["mode"] = "Semar" if st.session_state["mode"] == "Percakapan" else "Dashboard"
 
 agen: S.Semar = st.session_state.agen
@@ -1139,10 +1287,17 @@ with st.sidebar:
 </div>
 """), unsafe_allow_html=True)
 
+    _u = st.session_state.get("_user")
+    if _u:
+        st.markdown(
+            f'<div class="user-kartu"><div class="uk-nama">{H.escape(_u["nama"])}'
+            f'{"<span class=uk-admin>admin</span>" if _u["peran"] == "admin" else ""}</div>'
+            f'<div class="uk-sub">{H.escape(_u["jabatan"])}</div>'
+            f'<div class="uk-sub">{H.escape(_u["seksi"])} &middot; {H.escape(_u["satker"])}</div></div>', unsafe_allow_html=True)
     st.markdown('<div class="sub-judul">Halaman</div>', unsafe_allow_html=True)
     mode = st.session_state["mode"]
     with st.container(key="nav_halaman"):
-        for _nama, _ikon in HALAMAN:
+        for _nama, _ikon in daftar_halaman():
             st.button(_nama, key=f"nav_{_nama}", icon=_ikon, width="stretch",
                       type="primary" if _nama == mode else "secondary",
                       on_click=_pindah_halaman, args=(_nama,))
@@ -1170,6 +1325,11 @@ with st.sidebar:
         st.session_state.pesan = []
         st.session_state.dash_lanjutan = False
         st.rerun()
+    if st.session_state.get("_user"):
+        st.button("Ganti kata sandi", width="stretch", type="secondary", icon=":material/key:", key="pb_ganti_sandi",
+                  on_click=lambda: st.session_state.__setitem__("_dialog_sandi", True))
+        st.button("Keluar", width="stretch", type="secondary", icon=":material/logout:", key="pb_keluar",
+                  on_click=lambda: st.session_state.clear())
 
 
 AVATAR_SEMAR = avatar_semar()
@@ -1298,13 +1458,16 @@ def tampil_dashboard(lebar: bool = False) -> None:
 # HALAMAN 3: PEMERIKSAAN BARANG (OCR + AI)
 # ===========================================================================
 TIPE_GAMBAR = ["png", "jpg", "jpeg", "webp", "bmp", "tif", "tiff"]
+TIPE_LAINNYA = TIPE_GAMBAR + ["gif", "heic", "heif", "pdf", "doc", "docx", "xls", "xlsx", "csv", "txt", "zip"]
 SLOT_INFO = {
     "dokumen": dict(no=1, judul="Dokumen", tipe=["pdf"] + TIPE_GAMBAR,
-                    sub="BC 2.5, packing list, dokumen pelengkap (PDF atau foto)"),
+                    sub="BC 2.5, packing list, dokumen pelengkap (PDF atau foto). Boleh lebih dari satu file atau foto."),
     "label": dict(no=2, judul="Foto label barang", tipe=TIPE_GAMBAR,
-                  sub="Label pada roll, kemasan, atau barang"),
+                  sub="Label pada roll, kemasan, atau barang. Boleh lebih dari satu foto."),
     "barang": dict(no=3, judul="Foto barang", tipe=TIPE_GAMBAR,
-                   sub="Barang dan kemasannya, dari beberapa sisi"),
+                   sub="Barang dan kemasannya, dari beberapa sisi. Boleh lebih dari satu foto."),
+    "lainnya": dict(no=4, judul="Foto/File lainnya", tipe=TIPE_LAINNYA,
+                    sub="Tidak dibaca OCR atau AI. Hanya disimpan 7 hari dan tampil di kolom file dokumentasi."),
 }
 
 
@@ -1325,13 +1488,54 @@ def tampil_hero_periksa() -> None:
 </div>"""), unsafe_allow_html=True)
 
 
+def _simpan_baris(r: dict) -> None:
+    """Simpan perubahan satu baris ke database (baris yang tidak punya id database dilewati)."""
+    if r.get("id", 0) <= 0:
+        return
+    db = _database()
+    if db is None:
+        return
+    try:
+        db.perbarui_baris(r["id"], PS.baris_ke_json(r))
+    except Exception as e:  # noqa: BLE001
+        st.session_state["pb_db_galat"] = f"{type(e).__name__}: {e}"
+        st.toast("Perubahan belum tersimpan ke database.", icon=":material/warning:")
+
+
+def _muat_riwayat() -> None:
+    """Muat baris dan file dokumentasi 7 hari terakhir dari database (sekali per sesi)."""
+    ss = st.session_state
+    db = _database()
+    if db is None:
+        return
+    try:
+        db.bersihkan()
+        data = db.muat_baris()
+        meta = db.meta_berkas([r["id"] for r in data])
+        baris = []
+        for r in data:
+            try:
+                baris.append(PS.baris_dari_json(r["isi"], r["id"], meta.get(r["id"], [])))
+            except Exception:  # noqa: BLE001  (baris rusak dilewati)
+                continue
+        ss.pb_baris = baris
+    except Exception as e:  # noqa: BLE001
+        ss["pb_db_galat"], ss["pb_db_tunda"] = f"{type(e).__name__}: {e}", time.time() + 60
+
+
 def _init_periksa() -> None:
     ss = st.session_state
     ss.setdefault("pb_baris", [])
+    if not ss.get("pb_dimuat"):
+        ss.pb_dimuat = True
+        _muat_riwayat()
     ss.setdefault("pb_seq", 0)
     ss.setdefault("pb_ver", 0)
     ss.setdefault("pb_kamera", {s: [] for s in SLOT_INFO})
     ss.setdefault("pb_kamver", {s: 0 for s in SLOT_INFO})
+    for _s in SLOT_INFO:                              # sesi lama yang dibuat sebelum ada menu baru
+        ss.pb_kamera.setdefault(_s, [])
+        ss.pb_kamver.setdefault(_s, 0)
 
 
 def _simpan_foto(slot: str) -> None:
@@ -1368,7 +1572,8 @@ def _slot_masukan(slot: str) -> int:
             if foto is not None:
                 st.button("Simpan foto ini", key=f"pb_simpan_{slot}_{ss.pb_kamver[slot]}", type="primary",
                           icon=":material/add_a_photo:", on_click=_simpan_foto, args=(slot,))
-            st.caption("Kamera hanya jalan di localhost atau https. Di HP, tombol unggah juga menawarkan kamera.")
+            st.caption("Ambil foto, tekan Simpan foto ini, lalu ambil foto berikutnya. Kamera hanya jalan di localhost atau https. "
+                       "Di HP, tombol unggah juga menawarkan kamera.")
         if ss.pb_kamera[slot]:
             kolom = st.columns(4)
             for i, f in enumerate(ss.pb_kamera[slot]):
@@ -1421,8 +1626,27 @@ def _proses_periksa(p: PM.Pengaturan) -> None:
     except Exception as e:  # noqa: BLE001
         st.error(f"Terjadi kesalahan yang tidak terduga: {e}")
         return
-    ss.pb_seq += 1
-    hasil["id"], hasil["rev"] = ss.pb_seq, 0
+    hasil["rev"], hasil["berkas"] = 0, []
+    _u = ss.get("_user")
+    if _u:
+        hasil["oleh"] = f"{_u['nama']} ({_u['nip']})"
+    db = _database()
+    if db is not None:
+        try:
+            hasil["id"] = db.simpan_baris(PS.baris_ke_json(hasil))
+            hasil["berkas"], w = PS.simpan_berkas_baris(db, hasil["id"], [(b.slot, b.nama, b.data) for b in berkas])
+            if w:
+                hasil["peringatan"] = list(hasil.get("peringatan", [])) + w
+                db.perbarui_baris(hasil["id"], PS.baris_ke_json(hasil))
+        except Exception as e:  # noqa: BLE001
+            ss["pb_db_galat"] = f"{type(e).__name__}: {e}"
+            if not hasil.get("id"):
+                db = None
+    if db is None:
+        ss.pb_seq += 1
+        hasil["id"] = -ss.pb_seq                          # id negatif = hanya ada di sesi ini
+        hasil["peringatan"] = list(hasil.get("peringatan", [])) + [
+            "Baris dan foto dokumentasi ini TIDAK tersimpan di database (belum tersambung), jadi hilang saat sesi berakhir."]
     ss.pb_baris.append(hasil)
     ss.pb_pilih = hasil["id"]
     ss.pb_ver += 1                                   # kosongkan kolom unggah untuk dokumen berikutnya
@@ -1451,12 +1675,35 @@ def _sheet_interaktif(kunci: str, mode: str, in_dialog: bool = False) -> None:
     if komponen is None:
         st.markdown(PM.html_sheet(ss.pb_baris, "460px"), unsafe_allow_html=True)
         return
-    aksi = komponen(html=PM.html_sheet(ss.pb_baris), mode=mode, tinggi=460, chrome=DIALOG_CHROME, key=kunci, default=None)
+    muat = ss.pop(f"pb_muat_{kunci}", None)               # isi file untuk Lihat/Unduh: dikirim sekali saja
+    aksi = komponen(html=PM.html_sheet(ss.pb_baris), mode=mode, tinggi=460, chrome=DIALOG_CHROME, muat=muat,
+                    key=kunci, default=None)
     kunci_seq = f"pb_seq_{kunci}"
     if isinstance(aksi, dict) and aksi.get("seq", 0) > ss.get(kunci_seq, 0):
         ss[kunci_seq] = aksi["seq"]                       # tiap klik hanya diterapkan sekali
-        if PM.terapkan_aksi_sheet(ss.pb_baris, aksi):
+        if aksi.get("aksi") == "berkas":
+            ditemukan = PM.aksi_berkas(ss.pb_baris, aksi)
+            if ditemukan:
+                ss[f"pb_muat_{kunci}"] = _muat_berkas(ditemukan[0], ditemukan[1], aksi["seq"])
+                st.rerun(scope="fragment" if in_dialog else "app")
+        elif PM.terapkan_aksi_sheet(ss.pb_baris, aksi):
+            _simpan_baris(next(b for b in ss.pb_baris if b.get("id") == aksi["id"]))
             st.rerun(scope="fragment" if in_dialog else "app")
+
+
+def _muat_berkas(mode: str, meta: dict, token: int) -> dict:
+    """Ambil isi file dari database untuk Lihat/Unduh di sheet."""
+    db = _database()
+    f = None
+    if db is not None:
+        try:
+            f = db.ambil_berkas(meta["id"])
+        except Exception as e:  # noqa: BLE001
+            st.session_state["pb_db_galat"] = f"{type(e).__name__}: {e}"
+    if f is None:
+        return {"token": token, "mode": "galat", "pesan": "File sudah kedaluwarsa atau tidak ditemukan"}
+    return {"token": token, "mode": mode, "nama": f["nama"], "mime": f["mime"], "ukuran": f["ukuran"],
+            "b64": base64.b64encode(f["data"]).decode()}
 
 
 DIALOG_CHROME = 170   # px di atas/bawah sheet pada dialog (judul + tombol); ubah bila ada celah atau sheet terpotong
@@ -1476,10 +1723,22 @@ def dialog_sheet() -> None:
 
 
 def _kosongkan_sheet() -> None:
+    db = _database()
+    if db is not None:
+        try:
+            db.hapus_semua()
+        except Exception as e:  # noqa: BLE001
+            st.session_state["pb_db_galat"] = f"{type(e).__name__}: {e}"
     st.session_state.pb_baris = []
 
 
 def _hapus_baris(id_: int) -> None:
+    db = _database()
+    if db is not None and id_ > 0:
+        try:
+            db.hapus_baris(id_)
+        except Exception as e:  # noqa: BLE001
+            st.session_state["pb_db_galat"] = f"{type(e).__name__}: {e}"
     st.session_state.pb_baris = [r for r in st.session_state.pb_baris if r["id"] != id_]
 
 
@@ -1497,7 +1756,7 @@ def _tab_sheet() -> None:
                       file_name=f"hasil_pemeriksaan_{time.strftime('%Y%m%d_%H%M')}.xlsx", icon=":material/download:",
                       mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", width="stretch")
     with c.popover("Kosongkan", icon=":material/delete:", disabled=not baris, width="stretch"):
-        st.write("Hapus semua baris di sheet? Unduh dulu bila masih diperlukan.")
+        st.write("Hapus semua baris di sheet beserta foto dokumentasinya, juga dari database? Unduh dulu bila masih diperlukan.")
         st.button("Ya, hapus semua baris", key="pb_kosongkan", on_click=_kosongkan_sheet)
     st.toggle("Buka layar penuh otomatis setelah hasil jadi", value=True, key="pb_auto_buka")
     _sheet_interaktif("pb_sheet_inline", "inline")
@@ -1525,6 +1784,8 @@ def _tab_koreksi() -> None:
     r = _pilih_baris("pb_pilih")
     if r is None:
         return
+    if r.get("oleh"):
+        st.caption(f"Diproses oleh {r['oleh']}")
     for w in r.get("peringatan", []):
         st.markdown(f'<div class="pb-peringatan">{H.escape(w)}</div>', unsafe_allow_html=True)
     pfx = f"pb_f_{r['id']}_{r.get('rev', 0)}_"
@@ -1585,6 +1846,7 @@ def _tab_koreksi() -> None:
                 r["kgm"] = PM.baca_angka(kgm)
         r["kemasan_total"], r["barang_total"] = kem_t.strip(), bar_t.strip()
         r["rev"] = r.get("rev", 0) + 1
+        _simpan_baris(r)
         st.rerun()
     st.button("Hapus baris ini", key=f"pb_hapus_{r['id']}", icon=":material/delete:", on_click=_hapus_baris, args=(r["id"],))
     st.markdown('<div class="pb-rumus"><b>Cara hitung.</b> Kemasan diperiksa = tingkat % dari kemasan total, dibulatkan ke atas, '
@@ -1629,8 +1891,37 @@ def _tab_ocr() -> None:
         except Exception as e:  # noqa: BLE001
             st.error(f"Terjadi kesalahan yang tidak terduga: {e}")
             return
-        ss.pb_baris[ss.pb_baris.index(r)] = PM.gabung_ulang(r, baru)
+        baru = PM.gabung_ulang(r, baru)
+        ss.pb_baris[ss.pb_baris.index(r)] = baru
+        _simpan_baris(baru)
         st.rerun()
+
+
+def _status_penyimpanan() -> None:
+    ss = st.session_state
+    with st.expander("Penyimpanan 7 hari", icon=":material/database:"):
+        st.caption(f"Foto dokumentasi dan baris sheet disimpan di database selama {PM.MASA_SIMPAN_HARI} hari, lalu dihapus otomatis. "
+                   "Semua pengguna aplikasi ini melihat daftar yang sama.")
+        db = _database()
+        if db is None:
+            st.error("Database belum tersambung, jadi hasil hanya ada selama sesi ini. "
+                     + (ss.get("pb_db_galat") or ""))
+            if st.button("Coba sambungkan lagi", key="pb_db_ulang", icon=":material/refresh:"):
+                ss["pb_db_tunda"] = 0
+                ss["pb_dimuat"] = False
+                st.rerun()
+            return
+        if db.jenis == "sqlite" and _online():
+            st.warning("Penyimpanan masih berupa file lokal. Di server file ini hilang saat aplikasi restart atau di-deploy ulang. "
+                       "Isi DATABASE_URL (Postgres, mis. Neon) pada Secrets agar foto benar-benar tersimpan 7 hari.")
+        else:
+            st.caption("Penyimpanan: " + ("file lokal (data_semar/)" if db.jenis == "sqlite" else "Postgres"))
+        if st.button("Periksa penyimpanan", key="pb_db_cek", icon=":material/fact_check:"):
+            try:
+                r = db.ringkas()
+                st.success(f"Tersambung. {r['baris']} baris, {r['berkas']} file, {r['byte'] / 1048576:.1f} MB.")
+            except Exception as e:  # noqa: BLE001
+                st.error(f"Gagal membaca database: {type(e).__name__}: {e}")
 
 
 def tampil_pemeriksaan() -> None:
@@ -1645,6 +1936,7 @@ def tampil_pemeriksaan() -> None:
         if st.button("Proses OCR dan AI", key="pb_proses", type="primary", icon=":material/auto_awesome:",
                      width="stretch", disabled=not siap):
             _proses_periksa(p)
+        _status_penyimpanan()
         if not siap:
             st.caption("Tambahkan minimal satu dokumen untuk memulai.")
         elif not (jumlah["label"] and jumlah["barang"]):
@@ -1659,6 +1951,130 @@ def tampil_pemeriksaan() -> None:
             _tab_ocr()
     if st.session_state.pop("pb_buka_sheet", False):
         dialog_sheet()
+
+
+# ===========================================================================
+# AKUN: ganti kata sandi dan halaman admin Pengguna
+# ===========================================================================
+@st.dialog("Ganti kata sandi")
+def dialog_ganti_sandi() -> None:
+    u = st.session_state.get("_user")
+    akun = _akun()
+    if not u or akun is None:
+        st.error("Tidak bisa membaca akun saat ini.")
+        return
+    with st.form("form_ganti_sandi"):
+        lama = st.text_input("Kata sandi lama", type="password")
+        baru = st.text_input("Kata sandi baru (minimal 8 karakter)", type="password")
+        ulang = st.text_input("Ulangi kata sandi baru", type="password")
+        kirim = st.form_submit_button("Simpan", type="primary", width="stretch")
+    if kirim:
+        ok, pesan = akun.ganti_sandi(u["id"], lama, baru, ulang, u["nip"])
+        (st.success if ok else st.error)(pesan)
+
+
+def _waktu_wib(t) -> str:
+    if not t:
+        return "-"
+    from datetime import datetime, timedelta, timezone
+    return datetime.fromtimestamp(t, tz=timezone(timedelta(hours=7))).strftime("%d-%m-%Y %H:%M")
+
+
+def _aksi_admin(aksi: str, id_: int) -> None:
+    ss = st.session_state
+    akun, saya = _akun(), ss.get("_user") or {}
+    if akun is None or saya.get("peran") != "admin":
+        return
+    target = next((u for u in akun.daftar_pengguna() if u["id"] == id_), None)
+    if target is None:
+        return
+    merusak = aksi in ("nonaktifkan", "hapus", "tolak", "cabut_admin")
+    if merusak and id_ == saya.get("id"):
+        st.toast("Akun Anda sendiri tidak bisa diubah dari sini.", icon=":material/block:")
+        return
+    if merusak and target["peran"] == "admin" and target["status"] == "aktif" and akun.jumlah_admin_aktif() <= 1:
+        st.toast("Ini satu-satunya admin aktif; tidak boleh dinonaktifkan.", icon=":material/block:")
+        return
+    if aksi in ("setujui", "aktifkan"):
+        akun.atur_status(id_, "aktif")
+    elif aksi == "nonaktifkan":
+        akun.atur_status(id_, "nonaktif")
+    elif aksi == "jadikan_admin":
+        akun.atur_peran(id_, "admin")
+    elif aksi == "cabut_admin":
+        akun.atur_peran(id_, "pengguna")
+    elif aksi == "reset":
+        sementara = AK.sandi_sementara()
+        akun.atur_sandi(id_, sementara)
+        ss["adm_sandi"] = (target["nama"], target["nip"], sementara)
+    elif aksi in ("hapus", "tolak"):
+        akun.hapus(id_)
+
+
+def tampil_pengguna() -> None:
+    """Halaman admin: setujui pendaftar baru dan kelola akun."""
+    ss = st.session_state
+    if (ss.get("_user") or {}).get("peran") != "admin":
+        st.error("Halaman ini hanya untuk admin.")
+        return
+    akun = _akun()
+    if akun is None:
+        st.error("Database akun belum tersambung. " + (ss.get("pb_db_galat") or ""))
+        return
+    st.markdown('<div class="pb-sheet-judul">Pengguna</div>'
+                '<div class="pb-sheet-sub">Setujui pendaftar baru dan kelola akun. Pendaftar tidak bisa masuk sebelum disetujui.</div>',
+                unsafe_allow_html=True)
+    pengguna = akun.daftar_pengguna()
+    n = {k: sum(1 for u in pengguna if u["status"] == k) for k in ("aktif", "menunggu", "nonaktif")}
+    a, b, c = st.columns(3)
+    a.metric("Aktif", n["aktif"])
+    b.metric("Menunggu persetujuan", n["menunggu"])
+    c.metric("Nonaktif", n["nonaktif"])
+    if ss.get("adm_sandi"):
+        nama, nip, sementara = ss["adm_sandi"]
+        st.success(f"Kata sandi sementara untuk {nama} (NIP {nip}). Sampaikan langsung; minta diganti lewat Ganti kata sandi.")
+        st.code(sementara, language=None)
+        st.button("Sembunyikan", key="adm_sembunyi", on_click=lambda: ss.pop("adm_sandi", None))
+    menunggu = [u for u in pengguna if u["status"] == "menunggu"]
+    if menunggu:
+        st.markdown("##### Menunggu persetujuan")
+        for u in menunggu:
+            with st.container(border=True):
+                x, y, z = st.columns([5, 1.2, 1.2])
+                x.markdown(f"**{H.escape(u['nama'])}** &middot; NIP {u['nip']}<br>"
+                           f"<small>{H.escape(u['jabatan'] or '')} &middot; {H.escape(u['seksi'] or '')} &middot; {H.escape(u['satker'] or '')}"
+                           f" &middot; daftar {_waktu_wib(u['dibuat'])} WIB</small>", unsafe_allow_html=True)
+                y.button("Setujui", key=f"adm_ok_{u['id']}", type="primary", on_click=_aksi_admin, args=("setujui", u["id"]), width="stretch")
+                z.button("Tolak", key=f"adm_tolak_{u['id']}", on_click=_aksi_admin, args=("tolak", u["id"]), width="stretch")
+    st.markdown("##### Semua pengguna")
+    df = pd.DataFrame([{"Nama": u["nama"], "NIP": u["nip"], "Jabatan": u["jabatan"], "Satker": u["satker"], "Seksi": u["seksi"],
+                        "Peran": u["peran"], "Status": u["status"], "Masuk terakhir (WIB)": _waktu_wib(u["masuk_terakhir"])}
+                       for u in pengguna])
+    st.dataframe(df, hide_index=True, width="stretch")
+    st.markdown("##### Kelola akun")
+    if not pengguna:
+        return
+    pilih = st.selectbox("Pilih pengguna", [u["id"] for u in pengguna], key="adm_pilih",
+                         format_func=lambda i: next(f"{u['nama']} ({u['nip']}) - {u['status']}" for u in pengguna if u["id"] == i))
+    t = next((u for u in pengguna if u["id"] == pilih), pengguna[0])      # akun terpilih bisa baru dihapus
+    pilih = t["id"]
+    p1, p2, p3, p4 = st.columns(4)
+    if t["status"] == "aktif":
+        p1.button("Nonaktifkan", key="adm_non", on_click=_aksi_admin, args=("nonaktifkan", pilih), width="stretch")
+    else:
+        p1.button("Aktifkan", key="adm_akt", type="primary", on_click=_aksi_admin, args=("aktifkan", pilih), width="stretch")
+    if t["peran"] == "admin":
+        p2.button("Cabut admin", key="adm_cabut", on_click=_aksi_admin, args=("cabut_admin", pilih), width="stretch")
+    else:
+        p2.button("Jadikan admin", key="adm_jadi", on_click=_aksi_admin, args=("jadikan_admin", pilih), width="stretch")
+    p3.button("Reset sandi", key="adm_reset", on_click=_aksi_admin, args=("reset", pilih), width="stretch")
+    with p4.popover("Hapus akun", width="stretch"):
+        st.write(f"Hapus akun {t['nama']} secara permanen?")
+        st.button("Ya, hapus", key="adm_hapus", on_click=_aksi_admin, args=("hapus", pilih))
+
+
+if st.session_state.pop("_dialog_sandi", False):
+    dialog_ganti_sandi()
 
 
 # ===========================================================================
@@ -1706,6 +2122,9 @@ SEMAR menjawab hanya dari Excel dan website yang ditentukan.</p></div>"""), unsa
 
 elif mode == "Pemeriksaan Barang":
     tampil_pemeriksaan()
+
+elif mode == "Pengguna":
+    tampil_pengguna()
 
 else:  # ---------------------------- halaman Semar / percakapan (seperti sebelumnya) ----------------------------
     tampil_hero(kb)

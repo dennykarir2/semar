@@ -6,6 +6,16 @@ html,body{margin:0;padding:0;background:transparent;overflow:hidden;font-family:
   font-size:12.5px;opacity:0;pointer-events:none;transition:opacity .18s;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;z-index:50;}
 #toast.tampil{opacity:.96;}
 td.xs-baru{outline:2px solid #F58220;outline-offset:-2px;}
+#lb{position:fixed;inset:0;z-index:100;background:rgba(10,20,40,.88);display:flex;flex-direction:column;}
+#lb .lb-bar{flex:0 0 auto;display:flex;gap:10px;align-items:center;padding:8px 12px;background:#0A1F44;color:#fff;font-size:13px;}
+#lb .lb-nama{flex:1 1 auto;min-width:0;overflow:hidden;white-space:nowrap;text-overflow:ellipsis;font-weight:700;}
+#lb .lb-nama small{font-weight:400;opacity:.75;margin-left:8px;}
+#lb button{font:700 12px Arial,sans-serif;padding:6px 14px;border-radius:999px;border:0;cursor:pointer;background:#fff;color:#0A1F44;}
+#lb button.utama{background:linear-gradient(90deg,#F58220,#F7B733);color:#1B1204;}
+#lb .lb-isi{flex:1 1 auto;min-height:0;display:flex;align-items:center;justify-content:center;overflow:auto;padding:10px;}
+#lb img{max-width:100%;max-height:100%;object-fit:contain;cursor:zoom-in;border-radius:6px;}
+#lb img.lb-zoom{max-width:none;max-height:none;cursor:zoom-out;}
+#lb .lb-pesan{color:#fff;text-align:center;font-size:14px;line-height:1.7;max-width:420px;}
 
 .xs-wrap{display:flex;flex-direction:column;border:1px solid #BFC6D4;border-radius:14px;overflow:hidden;background:#fff;box-shadow:0 14px 34px -22px rgba(10,31,68,.55);}
 .xs-scroll{flex:1 1 auto;min-height:0;overflow:auto;background:#fff;}
@@ -34,6 +44,19 @@ table.xs td.terbuka .xs-tombol::after{content:"\25B4  ringkas";}
 .xs-bawah{display:flex;gap:16px;align-items:center;flex-wrap:wrap;padding:7px 12px;background:#F4F6FA;border-top:1px solid #DDE2EB;font:12px Arial,sans-serif;color:#5B6577;}
 .xs-tab{background:#fff;border:1px solid #BFC6D4;border-bottom:3px solid #0E7A43;border-radius:6px 6px 0 0;padding:3px 14px;font-weight:700;color:#0E5A33;}
 .xs-legenda i{display:inline-block;width:11px;height:11px;background:#FFF1C9;border:1px solid #E2C46E;vertical-align:-1px;margin-right:4px;}
+table.xs td.xs-berkas{cursor:default;padding:5px 6px;}
+table.xs .xs-bk-daftar{max-height:200px;overflow:auto;}
+table.xs .xs-bk{display:flex;align-items:center;gap:7px;padding:3px 0;border-bottom:1px solid #EEF1F6;}
+table.xs .xs-bk:last-child{border-bottom:none;}
+table.xs .xs-mini{width:34px;height:34px;object-fit:cover;border-radius:6px;border:1px solid #DDE2EB;cursor:zoom-in;flex:0 0 auto;}
+table.xs .xs-pdf{width:34px;height:34px;border-radius:6px;background:#FDE8E4;color:#B3321F;font-weight:800;font-size:10px;display:flex;align-items:center;justify-content:center;cursor:zoom-in;flex:0 0 auto;}
+table.xs .xs-bk-nama{flex:1 1 auto;min-width:0;font-size:11.5px;line-height:1.3;overflow:hidden;white-space:nowrap;text-overflow:ellipsis;}
+table.xs .xs-bk-nama b{display:block;font-size:10px;font-weight:700;color:#C9622A;letter-spacing:.04em;text-transform:uppercase;}
+table.xs .xs-bk-aksi{display:flex;gap:4px;flex:0 0 auto;}
+table.xs .xs-bk button{font:600 11px Arial,sans-serif;padding:3px 8px;border-radius:999px;border:1px solid #BFC6D4;background:#fff;color:#1B2440;cursor:pointer;}
+table.xs .xs-bk button:hover{background:#F58220;border-color:#F58220;color:#1B1204;}
+table.xs .xs-bk-sisa{margin-top:3px;font-size:10.5px;color:#7C86A3;}
+table.xs .xs-bk-kosong{color:#9AA3B8;font-size:11.5px;}
 
 </style></head><body>
 <div id="akar"></div><div id="toast"></div>
@@ -80,6 +103,65 @@ table.xs td.terbuka .xs-tombol::after{content:"\25B4  ringkas";}
   function kedip(td) { td.classList.add("xs-baru"); setTimeout(function () { td.classList.remove("xs-baru"); }, 700); }
   function kunciSel(td) { return td.getAttribute("data-id") + "|" + td.getAttribute("data-k"); }
 
+  // ---- file dokumentasi: Lihat (pratinjau di dalam sheet) dan Unduh (langsung)
+  var sudahToken = 0, urlAktif = null;
+  function kirimBerkas(mode, fid, nama) {
+    hitung += 1;
+    kirim("streamlit:setComponentValue", {dataType: "json", value: {
+      aksi: "berkas", mode: mode, fid: fid, seq: Date.now() * 1000 + (hitung % 1000)}});
+    info(mode === "lihat" ? "Membuka" : "Menyiapkan unduhan", nama);
+  }
+  function dariB64(b64, mime) {
+    var bin = atob(b64), n = bin.length, u8 = new Uint8Array(n);
+    for (var i = 0; i < n; i++) u8[i] = bin.charCodeAt(i);
+    return new Blob([u8], {type: mime || "application/octet-stream"});
+  }
+  function unduhUrl(url, nama) {
+    var a = document.createElement("a");
+    a.href = url; a.download = nama || "dokumentasi";
+    document.body.appendChild(a); a.click(); document.body.removeChild(a);
+  }
+  function ukuranTeks(n) { return n > 1048576 ? (n / 1048576).toFixed(1) + " MB" : Math.max(1, Math.round(n / 1024)) + " KB"; }
+  function tutupLb() {
+    var lb = document.getElementById("lb"); if (lb) lb.remove();
+    if (urlAktif) { var u = urlAktif; urlAktif = null; setTimeout(function () { URL.revokeObjectURL(u); }, 1000); }
+  }
+  function bukaLb(m, url) {
+    tutupLb(); urlAktif = url;
+    var gambar = (m.mime || "").indexOf("image/") === 0;
+    var lb = document.createElement("div"); lb.id = "lb";
+    var bar = document.createElement("div"); bar.className = "lb-bar";
+    var nama = document.createElement("div"); nama.className = "lb-nama"; nama.textContent = m.nama;
+    var kecil = document.createElement("small"); kecil.textContent = ukuranTeks(m.ukuran || 0); nama.appendChild(kecil);
+    function tombol(teks, kelas, fn) { var b = document.createElement("button"); b.textContent = teks; if (kelas) b.className = kelas; b.onclick = fn; return b; }
+    bar.appendChild(nama);
+    bar.appendChild(tombol("Unduh", "utama", function () { unduhUrl(url, m.nama); info("Mengunduh", m.nama); }));
+    bar.appendChild(tombol("Buka di tab baru", "", function () { window.open(url, "_blank"); }));
+    bar.appendChild(tombol("Tutup", "", tutupLb));
+    var isi = document.createElement("div"); isi.className = "lb-isi";
+    if (gambar) {
+      var img = document.createElement("img"); img.src = url; img.alt = m.nama;
+      img.onclick = function () { img.classList.toggle("lb-zoom"); };
+      isi.appendChild(img);
+    } else {
+      var p = document.createElement("div"); p.className = "lb-pesan";
+      p.textContent = "Pratinjau berkas ini tidak tersedia di dalam sheet. Gunakan Buka di tab baru atau Unduh.";
+      isi.appendChild(p);
+    }
+    lb.appendChild(bar); lb.appendChild(isi); document.body.appendChild(lb);
+  }
+  function tangani(m) {
+    if (m.mode === "galat") { info(m.pesan || "File tidak tersedia", ""); return; }
+    var url = URL.createObjectURL(dariB64(m.b64, m.mime));
+    if (m.mode === "unduh") {
+      unduhUrl(url, m.nama); info("Mengunduh", m.nama);
+      setTimeout(function () { URL.revokeObjectURL(url); }, 60000);
+      return;
+    }
+    bukaLb(m, url);
+  }
+  document.addEventListener("keydown", function (e) { if (e.key === "Escape") tutupLb(); });
+
   function siklus(td) {                              // kosong -> V -> X -> kosong
     var sekarang = td.getAttribute("data-nilai") || "";
     var baru = sekarang === "" ? "V" : (sekarang === "V" ? "X" : "");
@@ -97,8 +179,15 @@ table.xs td.terbuka .xs-tombol::after{content:"\25B4  ringkas";}
   akar.addEventListener("click", function (ev) {
     var t = ev.target;
     if (!t || !t.closest) return;
+    var bk = t.closest(".xs-bk");
+    if (bk) {                                        // tombol Lihat / Unduh pada sel file dokumentasi
+      var fid = parseInt(bk.getAttribute("data-fid"), 10), nm = bk.getAttribute("data-nama") || "";
+      if (t.closest(".xs-bk-unduh")) kirimBerkas("unduh", fid, nm);
+      else if (t.closest(".xs-bk-lihat") || t.closest(".xs-mini") || t.closest(".xs-pdf")) kirimBerkas("lihat", fid, nm);
+      return;
+    }
     var td = t.closest("td");
-    if (!td || td.classList.contains("xs-kosong")) return;
+    if (!td || td.classList.contains("xs-kosong") || td.classList.contains("xs-berkas")) return;
     if (t.closest(".xs-tombol")) { td.classList.toggle("terbuka"); return; }
     if (td.classList.contains("xs-cek")) { siklus(td); return; }
     var teks = td.getAttribute("data-salin");
@@ -108,6 +197,7 @@ table.xs td.terbuka .xs-tombol::after{content:"\25B4  ringkas";}
   });
 
   function render(a) {
+    if (a.muat && a.muat.token && a.muat.token !== sudahToken) { sudahToken = a.muat.token; tangani(a.muat); }
     var h = hitungTinggi(a);
     kirim("streamlit:setFrameHeight", {height: h});
     var kunci = (a.html || "") + "|" + h;
