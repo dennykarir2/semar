@@ -12,7 +12,7 @@ HTTPS membuat kamera ponsel bisa dipakai langsung dari halaman Pemeriksaan Baran
 
 ### 1. Buat repositori PRIVAT di GitHub
 Di github.com: New repository, beri nama `semar`, pilih **Private**, lalu Create.
-Repositori harus privat karena berisi file Excel data Anda.
+Repositori harus privat karena berisi file data Anda (Database Pengetahuan dan data dashboard).
 
 ### 2. Unggah isi folder ini ke repositori
 Cara termudah: **GitHub Desktop** (desktop.github.com), pilih Add local repository ke folder ini, lalu Commit dan Publish repository (centang Keep this code private).
@@ -54,7 +54,7 @@ Tabel dibuat otomatis (`semar_baris` dan `semar_berkas`). Baris dan file yang le
 Tanpa `DATABASE_URL`, aplikasi memakai file lokal `data_semar/` (cukup untuk komputer sendiri, tidak untuk server).
 
 ## Memperbarui
-- Ubah kode atau Excel: commit ke GitHub, aplikasi otomatis diperbarui.
+- Ubah kode atau Database Pengetahuan: commit ke GitHub, aplikasi otomatis diperbarui.
 - Ganti sandi atau API key: share.streamlit.io, menu titik tiga di aplikasi, Settings, Secrets.
 
 ## Login dan akun pengguna
@@ -77,6 +77,11 @@ Setiap orang punya akun sendiri. **Masuk memakai NIP (18 digit) dan kata sandi.*
 - **Website sumber pengetahuan.** Sebagian situs bisa menolak akses dari server. Periksa lewat tombol Lihat isi basis pengetahuan.
 - **Suara.** Bila suara pria dari server tidak jalan, tambahkan `SEMAR_MESIN = "peramban"` pada Secrets.
 - **Akses lebih ketat (opsional).** Pengaturan Sharing di Streamlit bisa membatasi penonton ke email tertentu. Menurut forum Streamlit, aplikasi privat gratis dibatasi jumlahnya; kebijakan ini bisa berubah.
+
+## Gambar latar
+Latar aplikasi berwarna putih bergradasi dengan gambar Semar berseragam Bea Cukai (transparan 20%).
+Untuk memakai gambar sendiri, simpan satu berkas bernama `latar_semar.png` (atau `.webp` / `.jpg`) di folder aplikasi, sejajar dengan `app_web.py`, lalu unggah ke GitHub dan restart aplikasi.
+Gambar itu otomatis dibuat transparan 20% dan diperkecil. Gambar yang berlatar transparan (PNG) paling bagus hasilnya. Hapus berkasnya untuk kembali ke gambar bawaan.
 
 ## Dipakai di komputer sendiri
 `jalankan_semar_web.bat` tetap bisa dipakai seperti biasa. Halaman login juga tampil di komputer sendiri; orang yang mendaftar pertama menjadi admin. Untuk melewati login saat dipakai sendiri, tulis `SEMAR_TANPA_LOGIN=1` di file `.env`.

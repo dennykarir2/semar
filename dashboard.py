@@ -190,7 +190,7 @@ class DataDashboard:
             else:
                 galat.append("Sheet 'Penindakan' tidak ditemukan.")
         except PermissionError:
-            galat.append("File data sedang terkunci (Excel masih terbuka dan belum disimpan?). Memakai data terakhir.")
+            galat.append("File data sedang terkunci (Database Pengetahuan masih terbuka dan belum disimpan?). Memakai data terakhir.")
             self.galat = galat
             return
         except Exception as e:  # noqa: BLE001
@@ -804,7 +804,7 @@ def jelaskan(k: Kondisi, r: Ringkasan, data: DataDashboard, cat: list[str], n: N
     if n is not None and n.sebab:
         baris.append("- Data hanya memuat angka, jadi **penyebab** perubahan tidak tersedia di basis pengetahuan SEMAR.")
     if data.ada_contoh:
-        baris.append("\n_Perhatian: angka ini masih **data contoh** (bukan data resmi). Ganti isi file Excel dengan data resmi Anda._")
+        baris.append("\n_Perhatian: angka ini masih **data contoh** (bukan data resmi). Ganti isi Database Pengetahuan dengan data resmi Anda._")
     return "\n".join(baris)
 
 
@@ -887,7 +887,7 @@ def html_kpi(k: Kondisi, r: Ringkasan) -> str:
         if r.capaian is not None:
             kartu.append(("target", "Capaian target", persen(r.capaian), f"target {rp(r.target_total, True)}"))
         else:
-            kartu.append(("target", "Capaian target", "-", "target belum diisi di Excel"))
+            kartu.append(("target", "Capaian target", "-", "target belum diisi di Database Pengetahuan"))
         kartu.append(("tren", "Rata-rata per bulan", rp(r.rata_bulanan), f"{len([v for v in r.per_bulan if v is not None])} bulan data"))
     else:
         kartu.append(("perisai", "Total penindakan", f"{angka(r.total)} <small>kali</small>", delta(r.delta, k.banding) or f"{nama_bulan_rentang(k.bulan_awal, k.bulan_akhir)} {k.tahun}"))

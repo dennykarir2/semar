@@ -78,14 +78,15 @@ if _HILANG:
 try:
     import dashboard as DB
     import akun as AK
+    import latar as LATAR
     import pemeriksaan as PM
     import penyimpanan as PS
     import peta_wilayah as PW
 except ImportError as e:  # berkas pendukung belum disalin ke folder ini
     st.error("Berkas pendukung belum lengkap, jadi aplikasi web belum bisa berjalan.")
     st.markdown(
-        "Salin **lima berkas** ini ke folder SEMAR (satu folder dengan `app_web.py`):\n"
-        "- `dashboard.py`\n- `peta_wilayah.py`\n- `pemeriksaan.py`\n- `penyimpanan.py`\n- `akun.py`\n\nLalu jalankan ulang SEMAR.")
+        "Salin **enam berkas** ini ke folder SEMAR (satu folder dengan `app_web.py`):\n"
+        "- `dashboard.py`\n- `peta_wilayah.py`\n- `pemeriksaan.py`\n- `penyimpanan.py`\n- `akun.py`\n- `latar.py`\n\nLalu jalankan ulang SEMAR.")
     st.code(f"Penyebab: {e}", language="text")
     st.stop()
 
@@ -228,9 +229,10 @@ CSS = """
 html,body,.stApp,p,li,label,button,input,textarea,h1,h2,h3,h4,h5,h6,[data-testid="stMarkdownContainer"],[data-testid="stChatInput"] *{font-family:'Plus Jakarta Sans','Segoe UI',system-ui,sans-serif;}
 [data-testid="stIconMaterial"],.material-symbols-rounded,[class*="material-symbols"]{font-family:'Material Symbols Rounded'!important;}
 .stApp{background:
-  radial-gradient(1100px 500px at 100% -10%,rgba(245,130,32,.14),transparent 60%),
-  radial-gradient(900px 500px at -10% 30%,rgba(27,79,156,.12),transparent 60%),
-  linear-gradient(180deg,#FFF8EC 0%,#FFFDF8 45%,#EEF3FB 100%);color:var(--tinta);}
+  url("__LATAR_SEMAR__") right 4vw bottom 0/auto min(88vh,135vw) no-repeat,
+  radial-gradient(1000px 480px at 100% -10%,rgba(245,130,32,.07),transparent 60%),
+  radial-gradient(900px 500px at -10% 30%,rgba(27,79,156,.05),transparent 60%),
+  linear-gradient(180deg,#FFFFFF 0%,#FFFFFF 45%,#F3F7FD 100%);color:var(--tinta);}
 [data-testid="stHeader"]{background:transparent;}
 /* Sembunyikan hanya isi toolbar (menu, Deploy, dsb). Wadah stToolbar JANGAN di-display:none:
    di Streamlit baru tombol "buka sidebar" berada di dalamnya, sehingga ikut hilang. */
@@ -399,8 +401,15 @@ def padatkan(teks: str) -> str:
     return re.sub(r">\s+<", "><", re.sub(r"[ \t]*\n[ \t]*", " ", teks)).strip()
 
 
+@st.cache_resource(show_spinner=False)
+def _uri_latar() -> str:
+    """Gambar latar (Semar berseragam, transparan 20%). Ganti dengan latar_semar.png di folder aplikasi bila ingin gambar sendiri."""
+    return LATAR.latar_uri(S.BASE_DIR)
+
+
 def terapkan_tema():
-    css = (CSS + DB.CSS + CSS_NAV + PM.CSS).replace("__KAWUNG_HERO__", kawung_uri(0.11)).replace("__KAWUNG_SIDE__", kawung_uri(0.07))
+    css = ((CSS + DB.CSS + CSS_NAV + PM.CSS).replace("__KAWUNG_HERO__", kawung_uri(0.11)).replace("__KAWUNG_SIDE__", kawung_uri(0.07))
+           .replace("__LATAR_SEMAR__", _uri_latar()))
     st.markdown(f"<style>{re.sub(chr(10) + '+', ' ', css)}</style>", unsafe_allow_html=True)
 
 
@@ -961,14 +970,14 @@ def ketik(teks: str):
 
 @st.dialog("Isi basis pengetahuan", width="large")
 def dialog_basis(kb: S.BasisPengetahuan):
-    st.markdown("**Tabel Pengetahuan** (dari Excel)")
+    st.markdown("**Database Pengetahuan**")
     if kb.entri:
         st.dataframe(
             pd.DataFrame([{"ID": d.kode, "Kategori": d.kategori, "Topik": d.judul,
                            "Isi Pengetahuan": d.teks, "Sumber": d.sumber} for d in kb.entri]),
             width="stretch", hide_index=True)
     else:
-        st.info("Belum ada baris pengetahuan aktif. Isi sheet 'Pengetahuan' di file Excel.")
+        st.info("Belum ada baris pengetahuan aktif. Isi sheet 'Pengetahuan' pada Database Pengetahuan.")
     st.markdown("**Website yang boleh dibaca**")
     if kb.situs:
         st.dataframe(
@@ -977,7 +986,7 @@ def dialog_basis(kb: S.BasisPengetahuan):
             width="stretch", hide_index=True)
         st.caption("Angka 0 berarti halaman gagal dibaca. Lihat jendela hitam (Command Prompt) untuk alasannya.")
     else:
-        st.info("Belum ada website aktif. Isi sheet 'Website' di file Excel dan set Aktif = Ya.")
+        st.info("Belum ada website aktif. Isi sheet 'Website' pada Database Pengetahuan dan set Aktif = Ya.")
 
 
 # ===========================================================================
@@ -1257,12 +1266,12 @@ data = data_bersama()
 data.muat()
 
 if not st.session_state.siap:
-    with st.spinner("Memuat basis pengetahuan (Excel dan website)..."):
+    with st.spinner("Memuat Database Pengetahuan dan website..."):
         try:
             kb.segarkan(paksa=True)
             st.session_state.siap = True
         except Exception as e:  # noqa: BLE001
-            st.error(f"Gagal memuat file Excel: {e}")
+            st.error(f"Gagal memuat Database Pengetahuan: {e}")
             st.stop()
 
 if "kondisi" not in st.session_state:
@@ -1313,7 +1322,7 @@ with st.sidebar:
             st.caption(f"Suara pria (Ardi) belum bisa dipakai: {_st['pesan']}. Sementara dipakai suara bawaan peramban.")
 
     st.markdown('<div class="sub-judul">Aksi</div>', unsafe_allow_html=True)
-    if st.button("Muat ulang Excel dan website", width="stretch"):
+    if st.button("Muat ulang Database Pengetahuan dan website", width="stretch"):
         with st.spinner("Membaca ulang..."):
             kb.segarkan(paksa=True)
             data.muat(paksa=True)
@@ -1415,7 +1424,7 @@ def tampil_dashboard(lebar: bool = False) -> None:
         st.warning(g)
     if not data.ada_data:
         st.info("Data dashboard belum ada. Pastikan file **data_dashboard_semar.xlsx** berada satu folder "
-                "dengan aplikasi, lalu tekan *Muat ulang Excel dan website*.")
+                "dengan aplikasi, lalu tekan *Muat ulang Database Pengetahuan dan website*.")
         return
     st.markdown(DB.html_kpi(k, r), unsafe_allow_html=True)
 
@@ -1467,7 +1476,7 @@ SLOT_INFO = {
     "barang": dict(no=3, judul="Foto barang", tipe=TIPE_GAMBAR,
                    sub="Barang dan kemasannya, dari beberapa sisi. Boleh lebih dari satu foto."),
     "lainnya": dict(no=4, judul="Foto/File lainnya", tipe=TIPE_LAINNYA,
-                    sub="Tidak dibaca OCR atau AI. Hanya disimpan 7 hari dan tampil di kolom file dokumentasi."),
+                    sub="Tidak dibaca OCR atau SEMAR. Hanya disimpan 7 hari dan tampil di kolom file dokumentasi."),
 }
 
 
@@ -1479,10 +1488,10 @@ def tampil_hero_periksa() -> None:
   <div class="hero-isi">
     <div class="hero-semar">{ikon_semar_html()}</div>
     <div class="hero-teks">
-      <span class="hero-label">Bea Cukai &middot; OCR dan AI untuk pemeriksa</span>
+      <span class="hero-label">Bea Cukai &middot; OCR dan SEMAR untuk pemeriksa</span>
       <h1 class="hero-judul panjang">PEMERIKSAAN BARANG</h1>
       <p class="hero-sub">Foto atau unggah dokumen, label, dan barang. SEMAR membaca (OCR), menyusun baris sheet hasil pemeriksaan, dan menyiapkannya untuk diunduh.</p>
-      <div class="hero-pil"><span>OCR dokumen</span><span>AI membaca foto barang</span><span>Sheet layar penuh</span></div>
+      <div class="hero-pil"><span>OCR dokumen</span><span>SEMAR membaca foto barang</span><span>Sheet layar penuh</span></div>
     </div>
   </div>
 </div>"""), unsafe_allow_html=True)
@@ -1594,7 +1603,7 @@ def _pengaturan_periksa() -> PM.Pengaturan:
     with st.expander("Pengaturan pemeriksaan", icon=":material/tune:"):
         tingkat = st.radio("Tingkat pemeriksaan (sesuai Instruksi Pemeriksaan)", [10, 30], horizontal=True,
                            format_func=lambda x: f"{x}%", key="pb_tingkat")
-        kondisi = st.radio("Kondisi barang", ["Sesuai foto (AI)", "Baik", "Rusak"], horizontal=True, key="pb_kondisi")
+        kondisi = st.radio("Kondisi barang", ["Sesuai foto (SEMAR)", "Baik", "Rusak"], horizontal=True, key="pb_kondisi")
         kem = st.text_input("Jumlah kemasan yang diperiksa (kosongkan = hitung otomatis)", key="pb_kem")
         catatan = st.text_area("Catatan pemeriksa (opsional)", key="pb_catatan", height=80,
                                placeholder="Mis. kegunaan barang, kondisi kemasan, atau hal yang tidak terlihat di foto")
@@ -1863,21 +1872,21 @@ def _tab_ocr() -> None:
         return
     ctx = r.get("_ctx") or {}
     pfx = f"pb_o_{r['id']}_{r.get('rev', 0)}_"
-    st.caption("Teks hasil OCR yang dibaca AI. Bila ada salah baca, perbaiki di sini lalu susun ulang baris. "
-               "Susun ulang menimpa kolom hasil AI; centang dan waktu tetap dipertahankan.")
+    st.caption("Teks hasil OCR yang dibaca SEMAR. Bila ada salah baca, perbaiki di sini lalu susun ulang baris. "
+               "Susun ulang menimpa kolom hasil SEMAR; centang dan waktu tetap dipertahankan.")
     for i, o in enumerate(ctx.get("ocr", [])):
         status = f" (gagal: {o['galat']})" if o["galat"] else (f" ({o['halaman']} halaman)" if o["halaman"] else "")
         with st.expander(f"{PM.SLOT_JUDUL[o['slot']]}: {o['nama']}{status}"):
             st.text_area("Teks OCR", value=o["teks"], height=240, key=f"{pfx}{i}", label_visibility="collapsed")
     gambar = ctx.get("gambar", [])
     if gambar:
-        with st.expander(f"Foto yang dibaca AI ({len(gambar)})"):
+        with st.expander(f"Foto yang dibaca SEMAR ({len(gambar)})"):
             kol = st.columns(4)
             for i, g in enumerate(gambar):
                 kol[i % 4].image(base64.b64decode(g["b64"]), caption=g["nama"], width="stretch")
     p0 = ctx.get("pengaturan") or PM.Pengaturan()
     catatan = st.text_area("Catatan pemeriksa", value=p0.catatan, height=70, key=pfx + "cat")
-    kond = st.radio("Kondisi barang", ["Sesuai foto (AI)", "Baik", "Rusak"], horizontal=True, key=pfx + "kon",
+    kond = st.radio("Kondisi barang", ["Sesuai foto (SEMAR)", "Baik", "Rusak"], horizontal=True, key=pfx + "kon",
                     index={"": 0, "baik": 1, "rusak": 2}.get(p0.kondisi, 0))
     if st.button("Susun ulang baris dari teks ini", key=pfx + "ulang", icon=":material/refresh:"):
         ocr_baru = [dict(o, teks=ss.get(f"{pfx}{i}", o["teks"])) for i, o in enumerate(ctx.get("ocr", []))]
@@ -1933,7 +1942,7 @@ def tampil_pemeriksaan() -> None:
         jumlah = {s: _slot_masukan(s) for s in SLOT_INFO}
         p = _pengaturan_periksa()
         siap = jumlah["dokumen"] > 0
-        if st.button("Proses OCR dan AI", key="pb_proses", type="primary", icon=":material/auto_awesome:",
+        if st.button("Proses OCR dan SEMAR", key="pb_proses", type="primary", icon=":material/auto_awesome:",
                      width="stretch", disabled=not siap):
             _proses_periksa(p)
         _status_penyimpanan()
@@ -1942,7 +1951,7 @@ def tampil_pemeriksaan() -> None:
         elif not (jumlah["label"] and jumlah["barang"]):
             st.caption("Foto label dan foto barang belum lengkap. Uraian fisik di sheet akan lebih sedikit tanpa keduanya.")
     with kanan:
-        t1, t2, t3 = st.tabs(["Sheet hasil", "Koreksi dan AI", "Teks OCR"])
+        t1, t2, t3 = st.tabs(["Sheet hasil", "Koreksi dan SEMAR", "Teks OCR"])
         with t1:
             _tab_sheet()
         with t2:
@@ -2109,7 +2118,7 @@ if mode == "Dashboard":
                 if not st.session_state.pesan and not pertanyaan:
                     st.markdown(padatkan("""
 <div class="sambutan"><h3>Sugeng rawuh</h3><p>Atur dashboard dengan perintah singkat, atau tanyakan hal lain.
-SEMAR menjawab hanya dari Excel dan website yang ditentukan.</p></div>"""), unsafe_allow_html=True)
+SEMAR menjawab hanya dari Database Pengetahuan dan website yang ditentukan.</p></div>"""), unsafe_allow_html=True)
                     st.markdown('<div class="label-perintah">Coba perintah:</div>', unsafe_allow_html=True)
                     tombol_cepat(CONTOH_PERINTAH, 1, "perintah")
                 if pertanyaan:
@@ -2135,7 +2144,7 @@ else:  # ---------------------------- halaman Semar / percakapan (seperti sebelu
     if not st.session_state.pesan and not pertanyaan:
         st.markdown(padatkan("""
 <div class="sambutan"><h3>Sugeng rawuh, silakan bertanya</h3>
-<p>SEMAR menjawab hanya dari tabel Excel dan website yang ditentukan. Kalau informasinya tidak ada di sana,
+<p>SEMAR menjawab hanya dari Database Pengetahuan dan website yang ditentukan. Kalau informasinya tidak ada di sana,
 SEMAR akan mengatakannya terus terang, tanpa mengarang. Dashboard bisa diatur lewat chat: coba
 &ldquo;tampilkan penindakan di Kendal&rdquo;.</p></div>"""), unsafe_allow_html=True)
         topik = list(dict.fromkeys(d.judul for d in kb.entri if d.judul))[:6]

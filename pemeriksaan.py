@@ -574,7 +574,7 @@ def _ekstrak_sekali(agen, ocr: list[dict], gambar: list[dict], p: Pengaturan, ta
             if dengan_gambar and ("image" in pesan or "multimodal" in pesan or "vision" in pesan):
                 dengan_gambar = False
                 peringatan.append("Model yang dipakai menolak gambar, jadi foto tidak dianalisis. Pakai model deepseek-flash "
-                                  "(atur DEEPSEEK_MODEL) agar foto label dan barang ikut dibaca AI.")
+                                  "(atur DEEPSEEK_MODEL) agar foto label dan barang ikut dibaca SEMAR.")
                 continue
             raise GalatPemeriksaan(f"Gagal menghubungi DeepSeek: {e}") from e
         try:
@@ -582,9 +582,9 @@ def _ekstrak_sekali(agen, ocr: list[dict], gambar: list[dict], p: Pengaturan, ta
             break
         except ValueError:
             if percobaan == 2:
-                raise GalatPemeriksaan("AI tidak mengembalikan data yang bisa dibaca. Coba proses ulang.") from None
+                raise GalatPemeriksaan("SEMAR tidak mengembalikan data yang bisa dibaca. Coba proses ulang.") from None
     if not isinstance(data, dict):
-        raise GalatPemeriksaan("Format jawaban AI tidak sesuai. Coba proses ulang.")
+        raise GalatPemeriksaan("Format jawaban SEMAR tidak sesuai. Coba proses ulang.")
     for w in data.get("peringatan") or []:
         if _teks(w):
             peringatan.append(_teks(w))
@@ -844,7 +844,7 @@ def susun_uraian(agen, data: dict, baris: dict, ocr: list[dict], p: Pengaturan) 
         hasil = _json_dari(_chat(agen, _pesan_uraian(data, fokus, ocr, p), MAKS_TOKEN_URAIAN))
         penyebutan, fisik = _teks(hasil.get("penyebutan_umum")), _teks(hasil.get("uraian_fisik"))
     except Exception as e:      # noqa: BLE001
-        w.append(f"AI gagal menyusun penyebutan umum dan uraian fisik ({type(e).__name__}); "
+        w.append(f"SEMAR gagal menyusun penyebutan umum dan uraian fisik ({type(e).__name__}); "
                  "uraian hanya memuat data dokumen. Pakai tombol Susun ulang untuk mencoba lagi.")
     if not fisik:
         w.append("Uraian fisik barang (bentuk, warna, kemasan, label, kondisi) belum ada. Tambahkan foto barang/label "
@@ -861,10 +861,10 @@ def analisis(agen, ocr: list[dict], gambar: list[dict], p: Pengaturan, progres=l
     if not any((o["teks"] or "").strip() for o in ocr) and not gambar:
         gagal = "; ".join(sorted({o["galat"] for o in ocr if o["galat"]}))
         raise GalatPemeriksaan("Tidak ada teks yang berhasil dibaca dari berkas." + (f" Penyebab: {gagal}." if gagal else ""))
-    progres("AI membaca dokumen dan foto, lalu mengekstrak data...")
+    progres("SEMAR membaca dokumen dan foto, lalu mengekstrak data...")
     data, w1 = ekstrak(agen, ocr, gambar, p)
     baris, w2 = hitung_baris(data, p)
-    progres("AI menyusun uraian barang...")
+    progres("SEMAR menyusun uraian barang...")
     w3 = susun_uraian(agen, data, baris, ocr, p)
     w_ocr = []
     for o in ocr:
@@ -1125,7 +1125,7 @@ def html_sheet(baris: list[dict], tinggi: str | None = None, id_nama: str = "Has
     isi = []
     if not baris:
         isi.append(f"<tr><th class=\"xs-no\">2</th><td class=\"xs-kosong\" colspan=\"{len(KOLOM)}\">"
-                   "Belum ada data. Unggah atau foto dokumen di sisi kiri, lalu tekan Proses OCR dan AI: "
+                   "Belum ada data. Unggah atau foto dokumen di sisi kiri, lalu tekan Proses OCR dan SEMAR: "
                    "baris hasilnya muncul di sini.</td></tr>")
     for n, b in enumerate(baris, 2):
         kosong = sel_kosong(b)
